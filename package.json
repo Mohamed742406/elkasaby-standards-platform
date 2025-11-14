@@ -5,8 +5,8 @@
   "main": "server._v2js",
 
   "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js",
+    "dev": "node server_v2.js",
+    "start": "node server_v2.js",
     "build": "echo 'Build complete'"
   },
   "keywords": [
