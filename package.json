@@ -2,11 +2,11 @@
   "name": "elkasaby_standards_platform",
   "version": "1.0.0",
   "description": "Mohamed Elkasaby's Standards Translation and File Management Platform",
-  "main": "server.js",
+  "main": "server_v2.js",
   "type": "module",
   "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js",
+    "dev": "node server_v2.js",
+    "start": "node server_v2.js",
     "build": "echo 'Build complete'"
   },
   "keywords": [

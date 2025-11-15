@@ -4,9 +4,9 @@ services:
     env: node
     plan: free
     buildCommand: npm install
-    startCommand: node server_v2.js
+    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3000
+        value: 10000
