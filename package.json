@@ -1,0 +1,32 @@
+{
+  "name": "elkasaby_standards_platform",
+  "version": "1.0.0",
+  "description": "Mohamed Elkasaby's Standards Translation and File Management Platform",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "echo 'Build complete'"
+  },
+  "keywords": [
+    "ASTM",
+    "ACI",
+    "BS",
+    "standards",
+    "translation"
+  ],
+  "author": "Mohamed Elkasaby",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^12.4.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "express-fileupload": "^1.4.0",
+    "jsonwebtoken": "^9.0.0",
+    "multer": "^1.4.5-lts.1",
+    "sqlite3": "^5.1.6"
+  }
+}
