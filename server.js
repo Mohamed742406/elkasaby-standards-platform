@@ -12,6 +12,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+const ADMIN_PASSWORD = 'elkasaby2025';
 
 // Initialize SQLite Database
 const db = new Database('standards.db');
@@ -31,13 +32,11 @@ if (!fs.existsSync('uploads')) {
 // Initialize database tables
 function initializeDatabase() {
   try {
-    // Create tables
     db.exec(`
       CREATE TABLE IF NOT EXISTS standards (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
-        type TEXT,
         icon TEXT,
         description TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -52,67 +51,64 @@ function initializeDatabase() {
         filepath TEXT NOT NULL,
         filesize INTEGER,
         downloads INTEGER DEFAULT 0,
-        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (standard_id) REFERENCES standards(id)
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(standard_id) REFERENCES standards(id)
       );
 
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
         email TEXT UNIQUE NOT NULL,
-        role TEXT DEFAULT 'user',
+        password TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS comments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        username TEXT NOT NULL,
         file_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
         content TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id),
-        FOREIGN KEY (file_id) REFERENCES files(id)
+        FOREIGN KEY(file_id) REFERENCES files(id),
+        FOREIGN KEY(user_id) REFERENCES users(id)
       );
 
       CREATE TABLE IF NOT EXISTS ratings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        username TEXT NOT NULL,
         file_id INTEGER NOT NULL,
-        rating INTEGER CHECK(rating >= 1 AND rating <= 5),
+        user_id INTEGER NOT NULL,
+        rating INTEGER NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, file_id),
-        FOREIGN KEY (user_id) REFERENCES users(id),
-        FOREIGN KEY (file_id) REFERENCES files(id)
+        FOREIGN KEY(file_id) REFERENCES files(id),
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        UNIQUE(file_id, user_id)
       );
 
       CREATE TABLE IF NOT EXISTS platform_ratings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
-        username TEXT NOT NULL,
-        rating INTEGER CHECK(rating >= 1 AND rating <= 5),
+        rating INTEGER NOT NULL,
         comment TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id),
-        FOREIGN KEY (user_id) REFERENCES users(id)
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        UNIQUE(user_id)
       );
     `);
 
     // Insert default standards if not exist
-    const checkStandards = db.prepare('SELECT COUNT(*) as count FROM standards');
-    const result = checkStandards.get();
-    
-    if (result.count === 0) {
-      const insertStandards = db.prepare(`
-        INSERT INTO standards (code, name, type, icon, description)
-        VALUES (?, ?, ?, ?, ?)
-      `);
+    const standards = [
+      { code: 'ACI', name: 'American Concrete Institute', icon: '🏗️', description: 'American standards for concrete design and testing' },
+      { code: 'ASTM', name: 'American Society for Testing and Materials', icon: '🔬', description: 'American standards for materials and testing' },
+      { code: 'BS', name: 'British Standards', icon: '🇬🇧', description: 'British standards for engineering and construction' }
+    ];
 
-      insertStandards.run('ACI', 'American Concrete Institute', 'ACI', '🏗️', 'American standards for concrete design and testing');
-      insertStandards.run('ASTM', 'American Society for Testing and Materials', 'ASTM', '🔬', 'American standards for materials and testing');
-      insertStandards.run('BS', 'British Standards', 'BS', '🇬🇧', 'British standards for engineering and construction');
+    const checkStandard = db.prepare('SELECT id FROM standards WHERE code = ?');
+    const insertStandard = db.prepare('INSERT INTO standards (code, name, icon, description) VALUES (?, ?, ?, ?)');
+
+    for (const std of standards) {
+      if (!checkStandard.get(std.code)) {
+        insertStandard.run(std.code, std.name, std.icon, std.description);
+      }
     }
 
     console.log('✅ Database initialized successfully');
@@ -125,297 +121,88 @@ function initializeDatabase() {
 initializeDatabase();
 
 // ==================== Authentication ====================
-const ADMIN_PASSWORD = 'elkasaby2025';
-const sessions = new Map();
 
-function generateToken() {
-  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-}
-
-function checkAdmin(req, res, next) {
-  const token = req.headers['x-admin-token'] || req.query.token;
-  if (!token || !sessions.has(token)) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  next();
-}
-
-function checkUser(req, res, next) {
-  const token = req.headers['x-user-token'];
-  if (!token) {
-    return res.status(401).json({ error: 'يجب تسجيل الدخول أولاً' });
-  }
-  req.userId = parseInt(token);
-  next();
-}
-
-// ==================== API Routes ====================
-
-// Admin login
-app.post('/api/admin/login', (req, res) => {
-  try {
-    const { password } = req.body;
-    if (password !== ADMIN_PASSWORD) {
-      return res.status(401).json({ error: 'كلمة السر غير صحيحة' });
-    }
-    const token = generateToken();
-    sessions.set(token, { createdAt: new Date(), lastActivity: new Date() });
-    res.json({ success: true, token });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Admin logout
-app.post('/api/admin/logout', (req, res) => {
-  try {
-    const token = req.headers['x-admin-token'];
-    if (token) {
-      sessions.delete(token);
-    }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Check admin status
-app.get('/api/admin/status', (req, res) => {
-  try {
-    const token = req.headers['x-admin-token'];
-    const isAdmin = token && sessions.has(token);
-    res.json({ isAdmin });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ==================== User Registration & Login ====================
-
-// User registration
 app.post('/api/auth/register', (req, res) => {
   try {
     const { username, email, password } = req.body;
 
     if (!username || !email || !password) {
-      return res.status(400).json({ error: 'جميع الحقول مطلوبة' });
+      return res.json({ success: false, error: 'جميع الحقول مطلوبة' });
     }
 
-    // Check if user exists
-    const checkUser = db.prepare('SELECT * FROM users WHERE username = ? OR email = ?');
-    const existing = checkUser.get(username, email);
-    
-    if (existing) {
-      return res.status(400).json({ error: 'اسم المستخدم أو البريد الإلكتروني موجود بالفعل' });
-    }
-
-    // Hash password
     const hashedPassword = bcrypt.hashSync(password, 10);
+    const insertUser = db.prepare('INSERT INTO users (username, email, password) VALUES (?, ?, ?)');
 
-    // Insert user
-    const insertUser = db.prepare('INSERT INTO users (username, email, password, role) VALUES (?, ?, ?, ?)');
-    insertUser.run(username, email, hashedPassword, 'user');
-
-    const getUser = db.prepare('SELECT id, username, email FROM users WHERE username = ?');
-    const user = getUser.get(username);
-
-    res.json({ success: true, message: 'تم التسجيل بنجاح', user });
+    try {
+      insertUser.run(username, email, hashedPassword);
+      res.json({ success: true, message: 'تم التسجيل بنجاح' });
+    } catch (error) {
+      res.json({ success: false, error: 'اسم المستخدم أو البريد موجود بالفعل' });
+    }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// User login
 app.post('/api/auth/login', (req, res) => {
   try {
     const { username, password } = req.body;
 
     if (!username || !password) {
-      return res.status(400).json({ error: 'اسم المستخدم وكلمة السر مطلوبة' });
+      return res.json({ success: false, error: 'اسم المستخدم وكلمة السر مطلوبة' });
     }
 
     const getUser = db.prepare('SELECT * FROM users WHERE username = ?');
     const user = getUser.get(username);
 
-    if (!user) {
-      return res.status(401).json({ error: 'اسم المستخدم أو كلمة السر غير صحيحة' });
-    }
-
-    if (!bcrypt.compareSync(password, user.password)) {
-      return res.status(401).json({ error: 'اسم المستخدم أو كلمة السر غير صحيحة' });
+    if (!user || !bcrypt.compareSync(password, user.password)) {
+      return res.json({ success: false, error: 'اسم المستخدم أو كلمة السر غير صحيحة' });
     }
 
     res.json({
       success: true,
-      message: 'تم تسجيل الدخول بنجاح',
-      user: { id: user.id, username: user.username, email: user.email, role: user.role }
+      user: { id: user.id, username: user.username, email: user.email }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ==================== Comments ====================
-
-// Get comments for a file
-app.get('/api/files/:fileId/comments', (req, res) => {
+app.post('/api/admin/login', (req, res) => {
   try {
-    const getComments = db.prepare('SELECT id, username, content, created_at FROM comments WHERE file_id = ? ORDER BY created_at DESC');
-    const comments = getComments.all(req.params.fileId);
-    res.json(comments);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+    const { password } = req.body;
 
-// Add comment
-app.post('/api/files/:fileId/comments', checkUser, (req, res) => {
-  try {
-    const { content } = req.body;
-    const fileId = req.params.fileId;
-    const userId = req.userId;
-
-    if (!content || content.trim() === '') {
-      return res.status(400).json({ error: 'التعليق لا يمكن أن يكون فارغاً' });
+    if (password !== ADMIN_PASSWORD) {
+      return res.json({ success: false, error: 'كلمة السر غير صحيحة' });
     }
 
-    // Check if file exists
-    const checkFile = db.prepare('SELECT * FROM files WHERE id = ?');
-    if (!checkFile.get(fileId)) {
-      return res.status(404).json({ error: 'الملف غير موجود' });
-    }
-
-    // Get username
-    const getUser = db.prepare('SELECT username FROM users WHERE id = ?');
-    const user = getUser.get(userId);
-
-    // Insert comment
-    const insertComment = db.prepare('INSERT INTO comments (user_id, username, file_id, content) VALUES (?, ?, ?, ?)');
-    insertComment.run(userId, user.username, fileId, content);
-
-    res.json({ success: true, message: 'تم إضافة التعليق بنجاح' });
+    res.json({ success: true, token: 'admin-token-' + Date.now() });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ==================== Ratings ====================
+// ==================== Admin Middleware ====================
 
-// Get ratings for a file
-app.get('/api/files/:fileId/ratings', (req, res) => {
-  try {
-    const getRatings = db.prepare('SELECT AVG(rating) as averageRating, COUNT(*) as totalRatings FROM ratings WHERE file_id = ?');
-    const data = getRatings.get(req.params.fileId);
-    res.json({
-      averageRating: data.averageRating || 0,
-      totalRatings: data.totalRatings || 0
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+function checkAdmin(req, res, next) {
+  const adminToken = req.headers['x-admin-token'];
+  if (!adminToken || !adminToken.startsWith('admin-token-')) {
+    return res.status(401).json({ success: false, error: 'غير مصرح' });
   }
-});
+  next();
+}
 
-// Add or update rating for a file
-app.post('/api/files/:fileId/ratings', checkUser, (req, res) => {
-  try {
-    const { rating } = req.body;
-    const fileId = req.params.fileId;
-    const userId = req.userId;
-
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({ error: 'التقييم يجب أن يكون بين 1 و 5' });
-    }
-
-    // Check if file exists
-    const checkFile = db.prepare('SELECT * FROM files WHERE id = ?');
-    if (!checkFile.get(fileId)) {
-      return res.status(404).json({ error: 'الملف غير موجود' });
-    }
-
-    // Get username
-    const getUser = db.prepare('SELECT username FROM users WHERE id = ?');
-    const user = getUser.get(userId);
-
-    // Check if user already rated
-    const checkRating = db.prepare('SELECT * FROM ratings WHERE user_id = ? AND file_id = ?');
-    const existingRating = checkRating.get(userId, fileId);
-
-    if (existingRating) {
-      const updateRating = db.prepare('UPDATE ratings SET rating = ? WHERE user_id = ? AND file_id = ?');
-      updateRating.run(rating, userId, fileId);
-    } else {
-      const insertRating = db.prepare('INSERT INTO ratings (user_id, username, file_id, rating) VALUES (?, ?, ?, ?)');
-      insertRating.run(userId, user.username, fileId, rating);
-    }
-
-    res.json({ success: true, message: 'تم حفظ التقييم' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+function checkUser(req, res, next) {
+  const userToken = req.headers['x-user-token'];
+  if (!userToken) {
+    return res.status(401).json({ success: false, error: 'يجب تسجيل الدخول' });
   }
-});
+  req.userId = parseInt(userToken);
+  next();
+}
 
-// ==================== Platform Ratings ====================
+// ==================== Standards ====================
 
-// Get platform ratings
-app.get('/api/platform/ratings', (req, res) => {
-  try {
-    const getRatings = db.prepare('SELECT AVG(rating) as averageRating, COUNT(*) as totalRatings FROM platform_ratings');
-    const data = getRatings.get();
-    res.json({
-      averageRating: data.averageRating || 0,
-      totalRatings: data.totalRatings || 0
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get all platform ratings
-app.get('/api/platform/ratings/all', (req, res) => {
-  try {
-    const getRatings = db.prepare('SELECT username, rating, comment, created_at FROM platform_ratings ORDER BY created_at DESC LIMIT 20');
-    const ratings = getRatings.all();
-    res.json(ratings);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Add or update platform rating
-app.post('/api/platform/ratings', checkUser, (req, res) => {
-  try {
-    const { rating, comment } = req.body;
-    const userId = req.userId;
-
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({ error: 'التقييم يجب أن يكون بين 1 و 5' });
-    }
-
-    // Get username
-    const getUser = db.prepare('SELECT username FROM users WHERE id = ?');
-    const user = getUser.get(userId);
-
-    // Check if user already rated
-    const checkRating = db.prepare('SELECT * FROM platform_ratings WHERE user_id = ?');
-    const existingRating = checkRating.get(userId);
-
-    if (existingRating) {
-      const updateRating = db.prepare('UPDATE platform_ratings SET rating = ?, comment = ? WHERE user_id = ?');
-      updateRating.run(rating, comment || '', userId);
-    } else {
-      const insertRating = db.prepare('INSERT INTO platform_ratings (user_id, username, rating, comment) VALUES (?, ?, ?, ?)');
-      insertRating.run(userId, user.username, rating, comment || '');
-    }
-
-    res.json({ success: true, message: 'شكراً لتقييمك' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ==================== Standards & Files ====================
-
-// Get all standards
 app.get('/api/standards', (req, res) => {
   try {
     const getStandards = db.prepare('SELECT * FROM standards');
@@ -426,42 +213,15 @@ app.get('/api/standards', (req, res) => {
   }
 });
 
-// Get files for a standard
-app.get('/api/standards/:standardId/files', (req, res) => {
-  try {
-    const getFiles = db.prepare('SELECT * FROM files WHERE standard_id = ? ORDER BY uploaded_at DESC');
-    const files = getFiles.all(req.params.standardId);
-    res.json(files);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// ==================== Statistics ====================
 
-// Search files
-app.get('/api/search', (req, res) => {
-  try {
-    const query = `%${req.query.query}%`;
-    const searchFiles = db.prepare('SELECT * FROM files WHERE title LIKE ? OR description LIKE ? ORDER BY uploaded_at DESC');
-    const files = searchFiles.all(query, query);
-    res.json(files);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get statistics
 app.get('/api/statistics', (req, res) => {
   try {
     const getStats = db.prepare(`
-      SELECT 
-        s.id,
-        s.name,
-        s.icon,
-        COUNT(f.id) as fileCount,
-        COALESCE(SUM(f.downloads), 0) as totalDownloads
+      SELECT s.id, s.name, s.icon, COUNT(f.id) as fileCount, COALESCE(SUM(f.downloads), 0) as totalDownloads
       FROM standards s
       LEFT JOIN files f ON s.id = f.standard_id
-      GROUP BY s.id, s.name, s.icon
+      GROUP BY s.id
     `);
     const stats = getStats.all();
     res.json(stats);
@@ -470,54 +230,46 @@ app.get('/api/statistics', (req, res) => {
   }
 });
 
-// Upload file (admin only)
-app.post('/api/files/upload', checkAdmin, (req, res) => {
+// ==================== Files ====================
+
+app.get('/api/standards/:standardId/files', (req, res) => {
   try {
-    if (!req.files || Object.keys(req.files).length === 0) {
-      return res.status(400).json({ error: 'لم يتم اختيار ملف' });
-    }
-
-    const file = req.files.file;
-    const standardId = req.body.standardId;
-    const title = req.body.title;
-    const description = req.body.description;
-
-    if (!standardId || !title) {
-      return res.status(400).json({ error: 'البيانات غير كاملة' });
-    }
-
-    // Validate file type
-    const allowedExtensions = ['.pdf', '.doc', '.docx', '.txt'];
-    const fileExtension = path.extname(file.name).toLowerCase();
-    if (!allowedExtensions.includes(fileExtension)) {
-      return res.status(400).json({ error: 'نوع الملف غير مدعوم' });
-    }
-
-    // Generate unique filename
-    const timestamp = Date.now();
-    const filename = `${timestamp}-${file.name}`;
-    const filepath = path.join('uploads', filename);
-
-    // Save file
-    file.mv(filepath, (err) => {
-      if (err) {
-        return res.status(500).json({ error: 'خطأ في حفظ الملف' });
-      }
-
-      try {
-        const insertFile = db.prepare('INSERT INTO files (standard_id, title, description, filename, filepath, filesize) VALUES (?, ?, ?, ?, ?, ?)');
-        insertFile.run(standardId, title, description, filename, filepath, file.size);
-        res.json({ success: true, message: 'تم رفع الملف بنجاح' });
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
+    const getFiles = db.prepare('SELECT * FROM files WHERE standard_id = ? ORDER BY created_at DESC');
+    const files = getFiles.all(req.params.standardId);
+    res.json(files);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Download file
+app.post('/api/files/upload', checkAdmin, (req, res) => {
+  try {
+    if (!req.files || !req.files.file) {
+      return res.json({ success: false, error: 'لم يتم اختيار ملف' });
+    }
+
+    const { standardId, title, description } = req.body;
+    const file = req.files.file;
+    const filename = `${Date.now()}-${file.name}`;
+    const filepath = path.join('uploads', filename);
+
+    file.mv(filepath, (err) => {
+      if (err) {
+        return res.json({ success: false, error: 'خطأ في رفع الملف' });
+      }
+
+      const insertFile = db.prepare(
+        'INSERT INTO files (standard_id, title, description, filename, filepath, filesize) VALUES (?, ?, ?, ?, ?, ?)'
+      );
+
+      insertFile.run(standardId, title, description, filename, filepath, file.size);
+      res.json({ success: true, message: 'تم رفع الملف بنجاح' });
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/api/files/:fileId/download', (req, res) => {
   try {
     const getFile = db.prepare('SELECT * FROM files WHERE id = ?');
@@ -527,7 +279,6 @@ app.get('/api/files/:fileId/download', (req, res) => {
       return res.status(404).json({ error: 'الملف غير موجود' });
     }
 
-    // Update download count
     const updateDownloads = db.prepare('UPDATE files SET downloads = downloads + 1 WHERE id = ?');
     updateDownloads.run(req.params.fileId);
 
@@ -537,37 +288,169 @@ app.get('/api/files/:fileId/download', (req, res) => {
   }
 });
 
-// Delete file (admin only)
 app.delete('/api/files/:fileId', checkAdmin, (req, res) => {
   try {
     const getFile = db.prepare('SELECT * FROM files WHERE id = ?');
     const file = getFile.get(req.params.fileId);
 
     if (!file) {
-      return res.status(404).json({ error: 'الملف غير موجود' });
+      return res.status(404).json({ success: false, error: 'الملف غير موجود' });
     }
 
-    // Delete from filesystem
     if (fs.existsSync(file.filepath)) {
       fs.unlinkSync(file.filepath);
     }
 
-    // Delete from database
     const deleteFile = db.prepare('DELETE FROM files WHERE id = ?');
     deleteFile.run(req.params.fileId);
 
     res.json({ success: true, message: 'تم حذف الملف' });
   } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== Comments ====================
+
+app.get('/api/files/:fileId/comments', (req, res) => {
+  try {
+    const getComments = db.prepare(`
+      SELECT c.*, u.username FROM comments c
+      JOIN users u ON c.user_id = u.id
+      WHERE c.file_id = ?
+      ORDER BY c.created_at DESC
+    `);
+    const comments = getComments.all(req.params.fileId);
+    res.json(comments);
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Health check
+app.post('/api/files/:fileId/comments', checkUser, (req, res) => {
+  try {
+    const { content } = req.body;
+
+    if (!content || !content.trim()) {
+      return res.json({ success: false, error: 'التعليق لا يمكن أن يكون فارغاً' });
+    }
+
+    const insertComment = db.prepare(
+      'INSERT INTO comments (file_id, user_id, content) VALUES (?, ?, ?)'
+    );
+
+    insertComment.run(req.params.fileId, req.userId, content);
+    res.json({ success: true, message: 'تم إضافة التعليق' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== Ratings ====================
+
+app.get('/api/files/:fileId/ratings', (req, res) => {
+  try {
+    const getRatings = db.prepare(`
+      SELECT AVG(rating) as averageRating, COUNT(*) as totalRatings
+      FROM ratings
+      WHERE file_id = ?
+    `);
+    const result = getRatings.get(req.params.fileId);
+    res.json({
+      averageRating: result.averageRating || 0,
+      totalRatings: result.totalRatings || 0
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/files/:fileId/ratings', checkUser, (req, res) => {
+  try {
+    const { rating } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.json({ success: false, error: 'التقييم يجب أن يكون بين 1 و 5' });
+    }
+
+    const insertRating = db.prepare(
+      'INSERT OR REPLACE INTO ratings (file_id, user_id, rating) VALUES (?, ?, ?)'
+    );
+
+    insertRating.run(req.params.fileId, req.userId, rating);
+    res.json({ success: true, message: 'تم حفظ التقييم' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== Platform Ratings ====================
+
+app.get('/api/platform/ratings/all', (req, res) => {
+  try {
+    const getRatings = db.prepare(`
+      SELECT pr.*, u.username FROM platform_ratings pr
+      JOIN users u ON pr.user_id = u.id
+      ORDER BY pr.created_at DESC
+    `);
+    const ratings = getRatings.all();
+    res.json(ratings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/platform/ratings', checkUser, (req, res) => {
+  try {
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.json({ success: false, error: 'التقييم يجب أن يكون بين 1 و 5' });
+    }
+
+    const insertRating = db.prepare(
+      'INSERT OR REPLACE INTO platform_ratings (user_id, rating, comment) VALUES (?, ?, ?)'
+    );
+
+    insertRating.run(req.userId, rating, comment || null);
+    res.json({ success: true, message: 'شكراً لتقييمك' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== Search ====================
+
+app.get('/api/search', (req, res) => {
+  try {
+    const query = req.query.query;
+
+    if (!query) {
+      return res.json([]);
+    }
+
+    const searchFiles = db.prepare(`
+      SELECT * FROM files
+      WHERE title LIKE ? OR description LIKE ?
+      ORDER BY created_at DESC
+    `);
+
+    const searchTerm = `%${query}%`;
+    const files = searchFiles.all(searchTerm, searchTerm);
+    res.json(files);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== Health Check ====================
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Server is running' });
 });
 
 // ==================== Start Server ====================
+
 app.listen(PORT, () => {
   console.log(`✅ Mohamed Elkasaby's Standards Platform running on port ${PORT}`);
   console.log(`📁 SQLite Database: standards.db`);
