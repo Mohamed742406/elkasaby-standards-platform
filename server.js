@@ -1,24 +1,20 @@
 import express from 'express';
 import cors from 'cors';
 import fileUpload from 'express-fileupload';
-import pkg from 'pg';
+import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 
-const { Pool } = pkg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// PostgreSQL Connection Pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://localhost/elkasaby_standards',
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
-});
+// Initialize SQLite Database
+const db = new Database('standards.db');
 
 // Middleware
 app.use(cors());
@@ -33,84 +29,92 @@ if (!fs.existsSync('uploads')) {
 }
 
 // Initialize database tables
-async function initializeDatabase() {
+function initializeDatabase() {
   try {
-    const client = await pool.connect();
-    
     // Create tables
-    await client.query(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS standards (
-        id SERIAL PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
         type TEXT,
         icon TEXT,
         description TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS files (
-        id SERIAL PRIMARY KEY,
-        standard_id INTEGER NOT NULL REFERENCES standards(id) ON DELETE CASCADE,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        standard_id INTEGER NOT NULL,
         title TEXT NOT NULL,
         description TEXT,
         filename TEXT NOT NULL,
         filepath TEXT NOT NULL,
         filesize INTEGER,
         downloads INTEGER DEFAULT 0,
-        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (standard_id) REFERENCES standards(id)
       );
 
       CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
         email TEXT UNIQUE NOT NULL,
         role TEXT DEFAULT 'user',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS comments (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
         username TEXT NOT NULL,
-        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        file_id INTEGER NOT NULL,
         content TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (file_id) REFERENCES files(id)
       );
 
       CREATE TABLE IF NOT EXISTS ratings (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
         username TEXT NOT NULL,
-        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        file_id INTEGER NOT NULL,
         rating INTEGER CHECK(rating >= 1 AND rating <= 5),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, file_id)
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, file_id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (file_id) REFERENCES files(id)
       );
 
       CREATE TABLE IF NOT EXISTS platform_ratings (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
         username TEXT NOT NULL,
         rating INTEGER CHECK(rating >= 1 AND rating <= 5),
         comment TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id)
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
       );
     `);
 
     // Insert default standards if not exist
-    await client.query(`
-      INSERT INTO standards (code, name, type, icon, description)
-      VALUES 
-        ('ACI', 'American Concrete Institute', 'ACI', '🏗️', 'American standards for concrete design and testing'),
-        ('ASTM', 'American Society for Testing and Materials', 'ASTM', '🔬', 'American standards for materials and testing'),
-        ('BS', 'British Standards', 'BS', '🇬🇧', 'British standards for engineering and construction')
-      ON CONFLICT (code) DO NOTHING;
-    `);
+    const checkStandards = db.prepare('SELECT COUNT(*) as count FROM standards');
+    const result = checkStandards.get();
+    
+    if (result.count === 0) {
+      const insertStandards = db.prepare(`
+        INSERT INTO standards (code, name, type, icon, description)
+        VALUES (?, ?, ?, ?, ?)
+      `);
 
-    client.release();
+      insertStandards.run('ACI', 'American Concrete Institute', 'ACI', '🏗️', 'American standards for concrete design and testing');
+      insertStandards.run('ASTM', 'American Society for Testing and Materials', 'ASTM', '🔬', 'American standards for materials and testing');
+      insertStandards.run('BS', 'British Standards', 'BS', '🇬🇧', 'British standards for engineering and construction');
+    }
+
     console.log('✅ Database initialized successfully');
   } catch (error) {
     console.error('Database initialization error:', error);
@@ -189,7 +193,7 @@ app.get('/api/admin/status', (req, res) => {
 // ==================== User Registration & Login ====================
 
 // User registration
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', (req, res) => {
   try {
     const { username, email, password } = req.body;
 
@@ -197,12 +201,11 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'جميع الحقول مطلوبة' });
     }
 
-    const client = await pool.connect();
-    
     // Check if user exists
-    const existing = await client.query('SELECT * FROM users WHERE username = $1 OR email = $2', [username, email]);
-    if (existing.rows.length > 0) {
-      client.release();
+    const checkUser = db.prepare('SELECT * FROM users WHERE username = ? OR email = ?');
+    const existing = checkUser.get(username, email);
+    
+    if (existing) {
       return res.status(400).json({ error: 'اسم المستخدم أو البريد الإلكتروني موجود بالفعل' });
     }
 
@@ -210,22 +213,20 @@ app.post('/api/auth/register', async (req, res) => {
     const hashedPassword = bcrypt.hashSync(password, 10);
 
     // Insert user
-    await client.query(
-      'INSERT INTO users (username, email, password, role) VALUES ($1, $2, $3, $4)',
-      [username, email, hashedPassword, 'user']
-    );
+    const insertUser = db.prepare('INSERT INTO users (username, email, password, role) VALUES (?, ?, ?, ?)');
+    insertUser.run(username, email, hashedPassword, 'user');
 
-    const user = await client.query('SELECT id, username, email FROM users WHERE username = $1', [username]);
-    client.release();
+    const getUser = db.prepare('SELECT id, username, email FROM users WHERE username = ?');
+    const user = getUser.get(username);
 
-    res.json({ success: true, message: 'تم التسجيل بنجاح', user: user.rows[0] });
+    res.json({ success: true, message: 'تم التسجيل بنجاح', user });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // User login
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -233,15 +234,13 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'اسم المستخدم وكلمة السر مطلوبة' });
     }
 
-    const client = await pool.connect();
-    const result = await client.query('SELECT * FROM users WHERE username = $1', [username]);
-    client.release();
+    const getUser = db.prepare('SELECT * FROM users WHERE username = ?');
+    const user = getUser.get(username);
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(401).json({ error: 'اسم المستخدم أو كلمة السر غير صحيحة' });
     }
 
-    const user = result.rows[0];
     if (!bcrypt.compareSync(password, user.password)) {
       return res.status(401).json({ error: 'اسم المستخدم أو كلمة السر غير صحيحة' });
     }
@@ -259,22 +258,18 @@ app.post('/api/auth/login', async (req, res) => {
 // ==================== Comments ====================
 
 // Get comments for a file
-app.get('/api/files/:fileId/comments', async (req, res) => {
+app.get('/api/files/:fileId/comments', (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query(
-      'SELECT id, username, content, created_at FROM comments WHERE file_id = $1 ORDER BY created_at DESC',
-      [req.params.fileId]
-    );
-    client.release();
-    res.json(result.rows);
+    const getComments = db.prepare('SELECT id, username, content, created_at FROM comments WHERE file_id = ? ORDER BY created_at DESC');
+    const comments = getComments.all(req.params.fileId);
+    res.json(comments);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // Add comment
-app.post('/api/files/:fileId/comments', checkUser, async (req, res) => {
+app.post('/api/files/:fileId/comments', checkUser, (req, res) => {
   try {
     const { content } = req.body;
     const fileId = req.params.fileId;
@@ -284,26 +279,20 @@ app.post('/api/files/:fileId/comments', checkUser, async (req, res) => {
       return res.status(400).json({ error: 'التعليق لا يمكن أن يكون فارغاً' });
     }
 
-    const client = await pool.connect();
-
     // Check if file exists
-    const fileCheck = await client.query('SELECT * FROM files WHERE id = $1', [fileId]);
-    if (fileCheck.rows.length === 0) {
-      client.release();
+    const checkFile = db.prepare('SELECT * FROM files WHERE id = ?');
+    if (!checkFile.get(fileId)) {
       return res.status(404).json({ error: 'الملف غير موجود' });
     }
 
     // Get username
-    const userResult = await client.query('SELECT username FROM users WHERE id = $1', [userId]);
-    const username = userResult.rows[0].username;
+    const getUser = db.prepare('SELECT username FROM users WHERE id = ?');
+    const user = getUser.get(userId);
 
     // Insert comment
-    await client.query(
-      'INSERT INTO comments (user_id, username, file_id, content) VALUES ($1, $2, $3, $4)',
-      [userId, username, fileId, content]
-    );
+    const insertComment = db.prepare('INSERT INTO comments (user_id, username, file_id, content) VALUES (?, ?, ?, ?)');
+    insertComment.run(userId, user.username, fileId, content);
 
-    client.release();
     res.json({ success: true, message: 'تم إضافة التعليق بنجاح' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -313,19 +302,13 @@ app.post('/api/files/:fileId/comments', checkUser, async (req, res) => {
 // ==================== Ratings ====================
 
 // Get ratings for a file
-app.get('/api/files/:fileId/ratings', async (req, res) => {
+app.get('/api/files/:fileId/ratings', (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query(
-      'SELECT AVG(rating) as averageRating, COUNT(*) as totalRatings FROM ratings WHERE file_id = $1',
-      [req.params.fileId]
-    );
-    client.release();
-    
-    const data = result.rows[0];
+    const getRatings = db.prepare('SELECT AVG(rating) as averageRating, COUNT(*) as totalRatings FROM ratings WHERE file_id = ?');
+    const data = getRatings.get(req.params.fileId);
     res.json({
-      averageRating: data.averagerating ? parseFloat(data.averagerating) : 0,
-      totalRatings: parseInt(data.totalratings) || 0
+      averageRating: data.averageRating || 0,
+      totalRatings: data.totalRatings || 0
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -333,7 +316,7 @@ app.get('/api/files/:fileId/ratings', async (req, res) => {
 });
 
 // Add or update rating for a file
-app.post('/api/files/:fileId/ratings', checkUser, async (req, res) => {
+app.post('/api/files/:fileId/ratings', checkUser, (req, res) => {
   try {
     const { rating } = req.body;
     const fileId = req.params.fileId;
@@ -343,38 +326,28 @@ app.post('/api/files/:fileId/ratings', checkUser, async (req, res) => {
       return res.status(400).json({ error: 'التقييم يجب أن يكون بين 1 و 5' });
     }
 
-    const client = await pool.connect();
-
     // Check if file exists
-    const fileCheck = await client.query('SELECT * FROM files WHERE id = $1', [fileId]);
-    if (fileCheck.rows.length === 0) {
-      client.release();
+    const checkFile = db.prepare('SELECT * FROM files WHERE id = ?');
+    if (!checkFile.get(fileId)) {
       return res.status(404).json({ error: 'الملف غير موجود' });
     }
 
     // Get username
-    const userResult = await client.query('SELECT username FROM users WHERE id = $1', [userId]);
-    const username = userResult.rows[0].username;
+    const getUser = db.prepare('SELECT username FROM users WHERE id = ?');
+    const user = getUser.get(userId);
 
     // Check if user already rated
-    const existingRating = await client.query(
-      'SELECT * FROM ratings WHERE user_id = $1 AND file_id = $2',
-      [userId, fileId]
-    );
+    const checkRating = db.prepare('SELECT * FROM ratings WHERE user_id = ? AND file_id = ?');
+    const existingRating = checkRating.get(userId, fileId);
 
-    if (existingRating.rows.length > 0) {
-      await client.query(
-        'UPDATE ratings SET rating = $1 WHERE user_id = $2 AND file_id = $3',
-        [rating, userId, fileId]
-      );
+    if (existingRating) {
+      const updateRating = db.prepare('UPDATE ratings SET rating = ? WHERE user_id = ? AND file_id = ?');
+      updateRating.run(rating, userId, fileId);
     } else {
-      await client.query(
-        'INSERT INTO ratings (user_id, username, file_id, rating) VALUES ($1, $2, $3, $4)',
-        [userId, username, fileId, rating]
-      );
+      const insertRating = db.prepare('INSERT INTO ratings (user_id, username, file_id, rating) VALUES (?, ?, ?, ?)');
+      insertRating.run(userId, user.username, fileId, rating);
     }
 
-    client.release();
     res.json({ success: true, message: 'تم حفظ التقييم' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -384,18 +357,13 @@ app.post('/api/files/:fileId/ratings', checkUser, async (req, res) => {
 // ==================== Platform Ratings ====================
 
 // Get platform ratings
-app.get('/api/platform/ratings', async (req, res) => {
+app.get('/api/platform/ratings', (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query(
-      'SELECT AVG(rating) as averageRating, COUNT(*) as totalRatings FROM platform_ratings'
-    );
-    client.release();
-    
-    const data = result.rows[0];
+    const getRatings = db.prepare('SELECT AVG(rating) as averageRating, COUNT(*) as totalRatings FROM platform_ratings');
+    const data = getRatings.get();
     res.json({
-      averageRating: data.averagerating ? parseFloat(data.averagerating) : 0,
-      totalRatings: parseInt(data.totalratings) || 0
+      averageRating: data.averageRating || 0,
+      totalRatings: data.totalRatings || 0
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -403,21 +371,18 @@ app.get('/api/platform/ratings', async (req, res) => {
 });
 
 // Get all platform ratings
-app.get('/api/platform/ratings/all', async (req, res) => {
+app.get('/api/platform/ratings/all', (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query(
-      'SELECT username, rating, comment, created_at FROM platform_ratings ORDER BY created_at DESC LIMIT 20'
-    );
-    client.release();
-    res.json(result.rows);
+    const getRatings = db.prepare('SELECT username, rating, comment, created_at FROM platform_ratings ORDER BY created_at DESC LIMIT 20');
+    const ratings = getRatings.all();
+    res.json(ratings);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // Add or update platform rating
-app.post('/api/platform/ratings', checkUser, async (req, res) => {
+app.post('/api/platform/ratings', checkUser, (req, res) => {
   try {
     const { rating, comment } = req.body;
     const userId = req.userId;
@@ -426,31 +391,22 @@ app.post('/api/platform/ratings', checkUser, async (req, res) => {
       return res.status(400).json({ error: 'التقييم يجب أن يكون بين 1 و 5' });
     }
 
-    const client = await pool.connect();
-
     // Get username
-    const userResult = await client.query('SELECT username FROM users WHERE id = $1', [userId]);
-    const username = userResult.rows[0].username;
+    const getUser = db.prepare('SELECT username FROM users WHERE id = ?');
+    const user = getUser.get(userId);
 
     // Check if user already rated
-    const existingRating = await client.query(
-      'SELECT * FROM platform_ratings WHERE user_id = $1',
-      [userId]
-    );
+    const checkRating = db.prepare('SELECT * FROM platform_ratings WHERE user_id = ?');
+    const existingRating = checkRating.get(userId);
 
-    if (existingRating.rows.length > 0) {
-      await client.query(
-        'UPDATE platform_ratings SET rating = $1, comment = $2 WHERE user_id = $3',
-        [rating, comment || '', userId]
-      );
+    if (existingRating) {
+      const updateRating = db.prepare('UPDATE platform_ratings SET rating = ?, comment = ? WHERE user_id = ?');
+      updateRating.run(rating, comment || '', userId);
     } else {
-      await client.query(
-        'INSERT INTO platform_ratings (user_id, username, rating, comment) VALUES ($1, $2, $3, $4)',
-        [userId, username, rating, comment || '']
-      );
+      const insertRating = db.prepare('INSERT INTO platform_ratings (user_id, username, rating, comment) VALUES (?, ?, ?, ?)');
+      insertRating.run(userId, user.username, rating, comment || '');
     }
 
-    client.release();
     res.json({ success: true, message: 'شكراً لتقييمك' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -460,53 +416,43 @@ app.post('/api/platform/ratings', checkUser, async (req, res) => {
 // ==================== Standards & Files ====================
 
 // Get all standards
-app.get('/api/standards', async (req, res) => {
+app.get('/api/standards', (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query('SELECT * FROM standards');
-    client.release();
-    res.json(result.rows);
+    const getStandards = db.prepare('SELECT * FROM standards');
+    const standards = getStandards.all();
+    res.json(standards);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // Get files for a standard
-app.get('/api/standards/:standardId/files', async (req, res) => {
+app.get('/api/standards/:standardId/files', (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query(
-      'SELECT * FROM files WHERE standard_id = $1 ORDER BY uploaded_at DESC',
-      [req.params.standardId]
-    );
-    client.release();
-    res.json(result.rows);
+    const getFiles = db.prepare('SELECT * FROM files WHERE standard_id = ? ORDER BY uploaded_at DESC');
+    const files = getFiles.all(req.params.standardId);
+    res.json(files);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // Search files
-app.get('/api/search', async (req, res) => {
+app.get('/api/search', (req, res) => {
   try {
     const query = `%${req.query.query}%`;
-    const client = await pool.connect();
-    const result = await client.query(
-      'SELECT * FROM files WHERE title ILIKE $1 OR description ILIKE $1 ORDER BY uploaded_at DESC',
-      [query]
-    );
-    client.release();
-    res.json(result.rows);
+    const searchFiles = db.prepare('SELECT * FROM files WHERE title LIKE ? OR description LIKE ? ORDER BY uploaded_at DESC');
+    const files = searchFiles.all(query, query);
+    res.json(files);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // Get statistics
-app.get('/api/statistics', async (req, res) => {
+app.get('/api/statistics', (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query(`
+    const getStats = db.prepare(`
       SELECT 
         s.id,
         s.name,
@@ -517,15 +463,15 @@ app.get('/api/statistics', async (req, res) => {
       LEFT JOIN files f ON s.id = f.standard_id
       GROUP BY s.id, s.name, s.icon
     `);
-    client.release();
-    res.json(result.rows);
+    const stats = getStats.all();
+    res.json(stats);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // Upload file (admin only)
-app.post('/api/files/upload', checkAdmin, async (req, res) => {
+app.post('/api/files/upload', checkAdmin, (req, res) => {
   try {
     if (!req.files || Object.keys(req.files).length === 0) {
       return res.status(400).json({ error: 'لم يتم اختيار ملف' });
@@ -553,18 +499,14 @@ app.post('/api/files/upload', checkAdmin, async (req, res) => {
     const filepath = path.join('uploads', filename);
 
     // Save file
-    file.mv(filepath, async (err) => {
+    file.mv(filepath, (err) => {
       if (err) {
         return res.status(500).json({ error: 'خطأ في حفظ الملف' });
       }
 
       try {
-        const client = await pool.connect();
-        await client.query(
-          'INSERT INTO files (standard_id, title, description, filename, filepath, filesize) VALUES ($1, $2, $3, $4, $5, $6)',
-          [standardId, title, description, filename, filepath, file.size]
-        );
-        client.release();
+        const insertFile = db.prepare('INSERT INTO files (standard_id, title, description, filename, filepath, filesize) VALUES (?, ?, ?, ?, ?, ?)');
+        insertFile.run(standardId, title, description, filename, filepath, file.size);
         res.json({ success: true, message: 'تم رفع الملف بنجاح' });
       } catch (error) {
         res.status(500).json({ error: error.message });
@@ -576,21 +518,18 @@ app.post('/api/files/upload', checkAdmin, async (req, res) => {
 });
 
 // Download file
-app.get('/api/files/:fileId/download', async (req, res) => {
+app.get('/api/files/:fileId/download', (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query('SELECT * FROM files WHERE id = $1', [req.params.fileId]);
-    
-    if (result.rows.length === 0) {
-      client.release();
+    const getFile = db.prepare('SELECT * FROM files WHERE id = ?');
+    const file = getFile.get(req.params.fileId);
+
+    if (!file) {
       return res.status(404).json({ error: 'الملف غير موجود' });
     }
 
-    const file = result.rows[0];
-
     // Update download count
-    await client.query('UPDATE files SET downloads = downloads + 1 WHERE id = $1', [req.params.fileId]);
-    client.release();
+    const updateDownloads = db.prepare('UPDATE files SET downloads = downloads + 1 WHERE id = ?');
+    updateDownloads.run(req.params.fileId);
 
     res.download(file.filepath, file.filename);
   } catch (error) {
@@ -599,17 +538,14 @@ app.get('/api/files/:fileId/download', async (req, res) => {
 });
 
 // Delete file (admin only)
-app.delete('/api/files/:fileId', checkAdmin, async (req, res) => {
+app.delete('/api/files/:fileId', checkAdmin, (req, res) => {
   try {
-    const client = await pool.connect();
-    const result = await client.query('SELECT * FROM files WHERE id = $1', [req.params.fileId]);
+    const getFile = db.prepare('SELECT * FROM files WHERE id = ?');
+    const file = getFile.get(req.params.fileId);
 
-    if (result.rows.length === 0) {
-      client.release();
+    if (!file) {
       return res.status(404).json({ error: 'الملف غير موجود' });
     }
-
-    const file = result.rows[0];
 
     // Delete from filesystem
     if (fs.existsSync(file.filepath)) {
@@ -617,8 +553,8 @@ app.delete('/api/files/:fileId', checkAdmin, async (req, res) => {
     }
 
     // Delete from database
-    await client.query('DELETE FROM files WHERE id = $1', [req.params.fileId]);
-    client.release();
+    const deleteFile = db.prepare('DELETE FROM files WHERE id = ?');
+    deleteFile.run(req.params.fileId);
 
     res.json({ success: true, message: 'تم حذف الملف' });
   } catch (error) {
@@ -634,7 +570,7 @@ app.get('/api/health', (req, res) => {
 // ==================== Start Server ====================
 app.listen(PORT, () => {
   console.log(`✅ Mohamed Elkasaby's Standards Platform running on port ${PORT}`);
-  console.log(`📁 PostgreSQL Database connected`);
+  console.log(`📁 SQLite Database: standards.db`);
   console.log(`📤 Uploads Directory: ./uploads`);
   console.log(`🌐 Access at: http://localhost:${PORT}` );
 });
